@@ -19,6 +19,7 @@ import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
 
 from utility import get_date_timestamp, create_markdown_table
+from config import d_config
 from collections import Counter
 from pync import Notifier
 from math import sqrt
@@ -32,50 +33,13 @@ from rich.table import Table
 from rich.console import Console
 from rich.logging import RichHandler
 
-DS_PATH = "/Users/kaleempeeroo/PhD/Datasets/ML/combined_without_zero_trails_and_partials_and_overflows_truncated.parquet"
-PARAM_COLS = [
-    "datalen_bytes",
-    "pub_count",
-    "sub_count",
-    "use_reliable",
-    "use_multicast",
-    "durability",
-]
-METRIC_COLS = ["latency_us", "total_mbps"]
-UNDESIRED_DATASETS = [
-    "3PI ML 6Mbps",
-    "3PI ML 8Mbps",
-    "5PI ML 24Mbps",
-    "5PI ML 71Mbps",
-    "5PI Mcast 1P3S BW High",
-    "5PI Mcast 1P3S BW Medium",
-]
-SECTIONS = [
-    {"name": "0_to_5", "start": 0, "end": 0.05},
-    {"name": "5_to_95", "start": 0.05, "end": 0.95},
-    {"name": "95_to_100", "start": 0.95, "end": 1},
-    {"name": "0_to_100", "start": 0, "end": 1},
-]
-OVERWRITE_PROCESSING = {
-    "variations": False,
-    "all_pairings": False,
-    "most_perf_pairings": False,
-}
-
-DEV_MODE = True
-DEV_CONFIG = {
-    "varied_param_list": ["use_multicast"],
-    "filter_option": 0,
-    "explore_classifications": False,
-}
-
 console = Console()
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 logging.basicConfig(
-    level="INFO",
+    level=logging.DEBUG,
     format="%(message)s",
     datefmt="[%X]",
     handlers=[
@@ -85,13 +49,86 @@ logging.basicConfig(
     ],
 )
 
-log = logging.getLogger("rich")
+lg = logging.getLogger("rich")
 plt_logger = logging.getLogger("matplotlib")
 plt_logger.setLevel(logging.ERROR)
 
 
+def main(D_CONFIG):
+    df = pd.read_parquet(d_config["data_path"])
+    lg.debug(f"Loaded dataset ({len(df.index):,}) rows)")
+
+    if not validate_experiment_names(df):
+        update_experiment_names(df)
+
+    df["datalen_bytes"] = df["datalen_bytes"].astype(int)
+    df["pub_count"] = df["pub_count"].astype(int)
+    df["sub_count"] = df["sub_count"].astype(int)
+    df["durability"] = df["durability"].astype(int)
+
+    # df = filter_datasets(df)
+
+    # df = filter_parameter_values(df)
+
+    # df = filter_parameter_values_interactively(df)
+
+    if not d_config["dev_mode"]:
+        varied_param_list = get_params_to_vary(df)
+        if not varied_param_list:
+            raise ValueError("No varied parameters found.")
+        if len(varied_param_list) == 0:
+            raise ValueError("No varied parameters found.")
+    else:
+        varied_param_list = d_config["dev_config"]["varied_param_list"]
+
+    [
+        make_needed_folders(" vs ".join(varied_param_list), metric)
+        for metric in d_config["metric_columns"]
+    ]
+
+    plot_input_distribution(df)
+
+    exp_variation_dict_list = get_variations(df, varied_param_list)
+    if len(exp_variation_dict_list) == 0:
+        raise ValueError("No experiment variations found.")
+
+    variations_df = get_variations_df(df, exp_variation_dict_list, varied_param_list)
+    if variations_df is None or variations_df.empty:
+        raise ValueError("Variations dataframe is None or empty.")
+
+    # parameter value combinations
+    param_val_comb_dict_list = get_param_values(variations_df, varied_param_list)
+    if param_val_comb_dict_list is None or len(param_val_comb_dict_list) == 0:
+        raise ValueError("Parameter value combinations list is None or empty.")
+
+    param_val_comb_dict_list = sort_list_of_dicts(param_val_comb_dict_list)
+    if param_val_comb_dict_list is None or len(param_val_comb_dict_list) == 0:
+        raise ValueError("Sorted parameter value combinations list is None or empty.")
+
+    all_pairings_df = process_all_pairings(
+        variations_df,
+        exp_variation_dict_list,
+        varied_param_list,
+        d_config["metric_columns"],
+        d_config["sections"],
+    )
+
+    most_perf_pairings_df = classify_pairings(all_pairings_df, varied_param_list)
+
+    for metric in d_config["metric_columns"]:
+        create_results_report(metric, most_perf_pairings_df, varied_param_list)
+
+    if not d_config["dev_mode"]:
+        if click.confirm("Do you want to explore the classifications?", default=True):
+            explore_classifications(most_perf_pairings_df, varied_param_list)
+
+    else:
+        if d_config["dev_config"]["explore_classifications"]:
+            explore_classifications(most_perf_pairings_df, varied_param_list)
+
+
 def update_experiment_names(df):
-    log.info("Updating experiment names...")
+    lg.info("Updating experiment names...")
 
     replacements = {
         "P_": "PUB_",
@@ -105,7 +142,7 @@ def update_experiment_names(df):
     }
 
     for loop_i, (original, replacement) in enumerate(replacements.items()):
-        log.info(
+        lg.info(
             "[{}/{}] Replacing {} with {}...".format(
                 loop_i + 1, len(replacements), original, replacement
             )
@@ -117,7 +154,7 @@ def update_experiment_names(df):
 
 
 def validate_experiment_names(df):
-    log.info("Validating experiment names...")
+    lg.info("Validating experiment names...")
     exp_names = df["experiment_name"].unique()
 
     replacements = {
@@ -134,7 +171,7 @@ def validate_experiment_names(df):
     for exp_name in exp_names:
         for original, replacement in replacements.items():
             if original in exp_name:
-                log.error(f"Found {original} in {exp_name}...")
+                lg.error(f"Found {original} in {exp_name}...")
                 return False
 
     return True
@@ -144,7 +181,7 @@ def create_test_sample_df():
 
     if not os.path.exists("./output/datasets_testing_sample.parquet"):
         df = pd.read_parquet(DS_PATH)
-        log.info("Creating test sample dataframe...")
+        lg.info("Creating test sample dataframe...")
         df = df.sample(frac=0.01)
         df.to_parquet("./output/datasets_testing_sample.parquet")
 
@@ -210,7 +247,7 @@ def describe_df(df):
     datasets = df["dataset"].unique().tolist()
     stats[f"datasets ({len(datasets)})"] = datasets
 
-    stats["params"] = PARAM_COLS
+    stats["params"] = d_config["parameter_columns"]
     stats["metrics"] = METRIC_COLS
 
     param_stats = describe_params(df)
@@ -221,10 +258,18 @@ def describe_df(df):
 
 
 def filter_datasets(df):
-    log.info("Filtering datasets...")
+    lg.info(f"Filtering out {len(UNDESIRED_DATASETS)} datasets...")
 
+    ls_ds_before = df["dataset"].unique().tolist()
+    pprint(ls_ds_before)
     df = df[~df["dataset"].isin(UNDESIRED_DATASETS)]
     df = df.reset_index(drop=True)
+    ls_ds_after = df["dataset"].unique().tolist()
+    pprint(ls_ds_after)
+    asdf
+
+    ls_removed_datasets = list(set(ls_ds_before) - set(ls_ds_after))
+    lg.info(f"Removed {len(ls_removed_datasets)} datasets: {ls_removed_datasets}")
 
     return df
 
@@ -233,7 +278,7 @@ def describe_params(df):
     # log.info("Describing parameters...")
     param_stats = {}
 
-    for param in PARAM_COLS:
+    for param in d_config["parameter_columns"]:
         values = df[param].unique().tolist()
         values = sorted(values)
         param_stats[f"{param} ({len(values)})"] = values
@@ -242,7 +287,7 @@ def describe_params(df):
 
 
 def plot_param_distributions(df):
-    log.info("Plotting parameter distributions...")
+    lg.info("Plotting parameter distributions...")
 
     pltx.clf()
     pltx.subplots(2, 3)
@@ -251,7 +296,7 @@ def plot_param_distributions(df):
     # Set fontsize to 14 for plt
     plt.rcParams.update({"font.size": 14})
 
-    for param_i, param in enumerate(PARAM_COLS):
+    for param_i, param in enumerate(d_config["parameter_columns"]):
         # Terminal Plotting with Plotext
         subplot_x = param_i % 3 + 1
         subplot_y = param_i // 3 + 1
@@ -269,7 +314,7 @@ def plot_param_distributions(df):
 
     pltx.show()
 
-    for param_i, param in enumerate(PARAM_COLS):
+    for param_i, param in enumerate(d_config["parameter_columns"]):
         # Matplotlib Plotting with Pyplot
         subplot_x = param_i % 3 + 1
         subplot_y = param_i // 3 + 1
@@ -319,34 +364,29 @@ def get_variations(df, params_to_vary):
     4. Return the list of variations which is a df with unvaried param combinations
     """
 
-    param_df = df[PARAM_COLS].copy().drop_duplicates().reset_index(drop=True)
+    param_df = (
+        df[d_config["parameter_columns"]].drop_duplicates().reset_index(drop=True)
+    )
+    unvaried_params = [
+        param for param in d_config["parameter_columns"] if param not in params_to_vary
+    ]
 
-    unvaried_params = [param for param in PARAM_COLS if param not in params_to_vary]
+    if not unvaried_params:
+        return []
 
-    unvaried_df = param_df[unvaried_params].copy()
-    unvaried_df = unvaried_df.drop_duplicates().reset_index(drop=True)
+    # Group by the unvaried parameters and count the number of variations for each group.
+    # A "variation" is a unique combination of the "params_to_vary".
+    # The size of each group gives us this count.
+    variation_counts = param_df.groupby(unvaried_params).size()
 
-    variations_dict_list = []
-    for _, unvaried_param_combination_row in unvaried_df.iterrows():
-        # Get all rows from param_df where the unvaried params match the
-        # current combination
-        temp_df = param_df.copy()
-        for unvaried_param in unvaried_params:
-            temp_df = temp_df[
-                temp_df[unvaried_param]
-                == unvaried_param_combination_row[unvaried_param]
-            ]
+    # We are only interested in the groups that have at least 2 variations to compare.
+    sufficient_variations = variation_counts[variation_counts >= 2]
 
-        temp_df.dropna(inplace=True)
-        temp_df = temp_df.drop_duplicates().reset_index(drop=True)
+    # The index of the resulting series contains the unvaried parameter combinations.
+    # We can reset the index to get a DataFrame and then convert it to a list of dicts.
+    variations_df = sufficient_variations.reset_index()[unvaried_params]
 
-        if len(temp_df) == 0:
-            continue
-
-        variations_dict_list.append(unvaried_param_combination_row.to_dict())
-
-    variations_dict_list = [_ for _ in variations_dict_list if len(_) > 0]
-    return variations_dict_list
+    return variations_df.to_dict("records")
 
 
 def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
@@ -373,10 +413,12 @@ def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
 
     click.secho("0. Go back", fg="red", bold=True)
 
-    for param_col_i, param_col in enumerate(PARAM_COLS):
+    for param_col_i, param_col in enumerate(d_config["parameter_columns"]):
         click.echo(f"{param_col_i + 1}. {param_col}")
 
-    click.secho(f"{len(PARAM_COLS) + 1}. Continue", fg="green", bold=True)
+    click.secho(
+        f"{len(d_config['parameter_columns']) + 1}. Continue", fg="green", bold=True
+    )
 
     if not DEV_MODE:
         user_choice = click.prompt(
@@ -388,8 +430,8 @@ def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
                     bold=True,
                 )
             ),
-            type=click.IntRange(0, len(PARAM_COLS) + 1),
-            default=len(PARAM_COLS) + 1,
+            type=click.IntRange(0, len(d_config["parameter_columns"]) + 1),
+            default=len(d_config["parameter_columns"]) + 1,
         )
 
     else:
@@ -398,11 +440,11 @@ def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
     if user_choice == 0:
         return df
 
-    elif user_choice == len(PARAM_COLS) + 1:
+    elif user_choice == len(d_config["parameter_columns"]) + 1:
         return df
 
     else:
-        df = filter_parameter_value(df, PARAM_COLS[user_choice - 1])
+        df = filter_parameter_value(df, d_config["parameter_columns"][user_choice - 1])
 
     while True:
         # TODO: Uncomment if you ever need to plot the distributions in terminal
@@ -412,10 +454,12 @@ def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
 
         click.secho("0. Go back", fg="red", bold=True)
 
-        for param_col_i, param_col in enumerate(PARAM_COLS):
+        for param_col_i, param_col in enumerate(d_config["parameter_columns"]):
             click.echo(f"{param_col_i + 1}. {param_col}")
 
-        click.secho(f"{len(PARAM_COLS) + 1}. Continue", fg="green", bold=True)
+        click.secho(
+            f"{len(d_config['parameter_columns']) + 1}. Continue", fg="green", bold=True
+        )
 
         user_choice = click.prompt(
             "Which parameter do you want to {}?".format(
@@ -426,18 +470,20 @@ def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
                     bold=True,
                 )
             ),
-            type=click.IntRange(0, len(PARAM_COLS) + 1),
-            default=len(PARAM_COLS) + 1,
+            type=click.IntRange(0, len(d_config["parameter_columns"]) + 1),
+            default=len(d_config["parameter_columns"]) + 1,
         )
 
         if user_choice == 0:
             return df
 
-        elif user_choice == len(PARAM_COLS) + 1:
+        elif user_choice == len(d_config["parameter_columns"]) + 1:
             return df
 
         else:
-            df = filter_parameter_value(df, PARAM_COLS[user_choice - 1])
+            df = filter_parameter_value(
+                df, d_config["parameter_columns"][user_choice - 1]
+            )
 
 
 def get_filter_type(df: pd.DataFrame = pd.DataFrame(), param: str = ""):
@@ -455,6 +501,9 @@ def get_filter_type(df: pd.DataFrame = pd.DataFrame(), param: str = ""):
 
     elif isinstance(df[param].iloc[0], np.bool):
         filter_types = ["!=", "=="]
+
+    elif isinstance(df[param].iloc[0], float):
+        filter_types = ["<=", ">=", "!=", "=="]
 
     else:
         raise ValueError(
@@ -511,7 +560,7 @@ def print_param_values_table(
     if param == "":
         raise ValueError("The parameter is empty.")
 
-    if param not in PARAM_COLS:
+    if param not in d_config["parameter_columns"]:
         raise ValueError("The parameter is not in the dataframe.")
 
     values = sorted(df[param].unique().tolist())
@@ -535,9 +584,11 @@ def print_param_values_table(
                 filtered_values = [str(value) for value in filtered_values]
 
         else:
-            if isinstance(df[param].iloc[0], np.int64):
+            if isinstance(df[param].iloc[0], np.int64) or isinstance(
+                df[param].iloc[0], float
+            ):
                 values = [int(value) for value in values]
-                filter_criteria = int(filter_criteria)
+                filter_criteria = float(filter_criteria)
 
                 if filter_type == "<=":
                     filtered_values = [
@@ -610,10 +661,12 @@ def get_params_to_vary(df):
     params_to_vary = []
 
     click.secho("0. Exit", fg="red", bold=True)
-    for param_i, param in enumerate(PARAM_COLS):
+    for param_i, param in enumerate(d_config["parameter_columns"]):
         click.echo(f"{param_i + 1}. {param}")
 
-    click.secho(f"{len(PARAM_COLS) + 1}. Continue", fg="green", bold=True)
+    click.secho(
+        f"{len(d_config['parameter_columns']) + 1}. Continue", fg="green", bold=True
+    )
 
     user_param_i = click.prompt(
         "Which parameter do you want to {}?".format(
@@ -624,24 +677,30 @@ def get_params_to_vary(df):
                 bold=True,
             )
         ),
-        type=click.IntRange(0, len(PARAM_COLS) + 1),
-        default=len(PARAM_COLS) + 1,
+        type=click.IntRange(0, len(d_config["parameter_columns"]) + 1),
+        default=len(d_config["parameter_columns"]) + 1,
     )
 
-    if user_param_i == 0 or user_param_i == len(PARAM_COLS) + 1:
+    if user_param_i == 0 or user_param_i == len(d_config["parameter_columns"]) + 1:
         return []
 
-    params_to_vary.append(PARAM_COLS[user_param_i - 1])
+    params_to_vary.append(d_config["parameter_columns"][user_param_i - 1])
     variations = get_variations(df, params_to_vary)
     console.print(f"{params_to_vary}: {len(variations)} variations", style="bold green")
 
     while True:
         click.secho("0) Stop", fg="red", bold=True)
-        for param_i, param in enumerate(PARAM_COLS):
+        for param_i, param in enumerate(d_config["parameter_columns"]):
             click.echo(f"{param_i + 1}. {param}")
 
-        click.secho(f"{len(PARAM_COLS) + 1}. Continue", fg="green", bold=True)
-        click.secho(f"{len(PARAM_COLS) + 2}. View Variations", fg="green", bold=True)
+        click.secho(
+            f"{len(d_config['parameter_columns']) + 1}. Continue", fg="green", bold=True
+        )
+        click.secho(
+            f"{len(d_config['parameter_columns']) + 2}. View Variations",
+            fg="green",
+            bold=True,
+        )
 
         user_param_i = click.prompt(
             "Which parameter do you want to {}?".format(
@@ -652,15 +711,15 @@ def get_params_to_vary(df):
                     bold=True,
                 )
             ),
-            type=click.IntRange(0, len(PARAM_COLS) + 2),
-            default=len(PARAM_COLS) + 1,
+            type=click.IntRange(0, len(d_config["parameter_columns"]) + 2),
+            default=len(d_config["parameter_columns"]) + 1,
         )
 
-        if user_param_i == 0 or user_param_i == len(PARAM_COLS) + 1:
+        if user_param_i == 0 or user_param_i == len(d_config["parameter_columns"]) + 1:
             break
 
-        elif user_param_i > 0 and user_param_i < len(PARAM_COLS) + 1:
-            params_to_vary.append(PARAM_COLS[user_param_i - 1])
+        elif user_param_i > 0 and user_param_i < len(d_config["parameter_columns"]) + 1:
+            params_to_vary.append(d_config["parameter_columns"][user_param_i - 1])
 
         variations = get_variations(df, params_to_vary)
 
@@ -672,14 +731,14 @@ def get_params_to_vary(df):
                 f"{params_to_vary}: {len(variations)} variations", style="bold green"
             )
 
-            if user_param_i == len(PARAM_COLS) + 2:
+            if user_param_i == len(d_config["parameter_columns"]) + 2:
                 pprint(variations)
 
     return params_to_vary
 
 
 def check_for_variation_file(params_to_vary):
-    log.info(f"Checking for previous variation files for {params_to_vary}...")
+    lg.info(f"Checking for previous variation files for {params_to_vary}...")
 
     param_str = " vs ".join(params_to_vary)
     variation_dir = f"./output/parameter_analysis_tool/{param_str}/variations/"
@@ -714,23 +773,24 @@ def get_variations_df(df, variations, params_to_vary):
     """
 
     existing_variation_file = check_for_variation_file(params_to_vary)
-    if not OVERWRITE_PROCESSING["variations"] and existing_variation_file:
-        log.info("Variation file exists. Loading...")
+    if not d_config["overwrite_processing"]["variations"] and existing_variation_file:
+        lg.info("Variation file exists. Loading...")
         return pd.read_parquet(existing_variation_file)
 
-    df_to_return = df.copy()
-
-    for var_i, variation in enumerate(variations):
-        log.info(
-            "[{}/{}] Getting variation dataframe for {}...".format(
-                var_i + 1, len(variations), format_param_dict_to_title(variation)
-            )
+    if not variations:
+        lg.warning(
+            "No variations provided to get_variations_df. Returning empty DataFrame."
         )
+        return pd.DataFrame(columns=df.columns)
 
-        variation_df = filter_df_by_dict(df, variation)
-        df_to_return = pd.concat([df_to_return, variation_df])
+    # Convert the list of variation dictionaries to a DataFrame.
+    variations_df = pd.DataFrame(variations)
+    unvaried_params = list(variations[0].keys())
 
-    df_to_return = df_to_return.drop_duplicates().reset_index(drop=True)
+    # Use an inner merge to filter `df`. This keeps only the rows in `df`
+    # where the values in `unvaried_params` match a row in `variations_df`.
+    # This is much more efficient than looping and concatenating.
+    df_to_return = pd.merge(df, variations_df, on=unvaried_params, how="inner")
 
     param_str = " vs ".join(params_to_vary)
     filedir = "./output/parameter_analysis_tool/{}/variations/".format(param_str)
@@ -739,7 +799,7 @@ def get_variations_df(df, variations, params_to_vary):
 
     write_df(df_to_return, filepath)
 
-    log.info(f"Variations saved to\n\t{os.path.abspath(filepath)}")
+    lg.info(f"Variations saved to\n\t{os.path.abspath(filepath)}")
 
     return df_to_return
 
@@ -754,7 +814,7 @@ def filter_parameter_value(df: pd.DataFrame = pd.DataFrame(), param: str = ""):
     if param == "":
         raise ValueError("The parameter is empty.")
 
-    if param not in PARAM_COLS:
+    if param not in d_config["parameter_columns"]:
         raise ValueError("The parameter is not in the dataframe.")
 
     print_param_values_table(df, param)
@@ -801,8 +861,10 @@ def filter_parameter_value(df: pd.DataFrame = pd.DataFrame(), param: str = ""):
 
             else:
 
-                if isinstance(df[param].iloc[0], np.int64):
-                    filter_criteria = int(filter_criteria)
+                if isinstance(df[param].iloc[0], np.int64) or isinstance(
+                    df[param].iloc[0], float
+                ):
+                    filter_criteria = float(filter_criteria)
 
                     if filter_type == "<=":
                         df = df[df[param] <= filter_criteria]
@@ -846,16 +908,20 @@ def filter_parameter_value(df: pd.DataFrame = pd.DataFrame(), param: str = ""):
 
 
 def filter_parameter_values(df):
-    log.info("Filtering parameter values...")
+    lg.info("Filtering parameter values...")
 
-    # df = df[
-    # (df['datalen_bytes'] <= 300) &
-    # (df['pub_count'] == 1) &
-    # (df['sub_count'] <= 15)
-    # (df['use_reliable'] == 0) &
-    # (df['use_multicast'] == 0) &
-    # (df['durability'] == 0)
-    # ]
+    n_before = len(df)
+    df = df[
+        (df["datalen_bytes"].isin([100, 512, 1000, 32, 64, 128, 256, 1024]))
+        # (df['pub_count'] == 1) &
+        # (df['sub_count'] <= 15)
+        # (df['use_reliable'] == 0) &
+        # (df['use_multicast'] == 0) &
+        # (df['durability'] == 0)
+    ]
+    n_after = len(df)
+
+    lg.info(f"Filtered out {n_after - n_after:,.0f} values")
 
     return df
 
@@ -881,7 +947,7 @@ def write_df(df, filepath):
 
 
 def get_param_values(df, params_to_vary):
-    log.info(f"Getting parameter values for {params_to_vary}...")
+    lg.info(f"Getting parameter values for {params_to_vary}...")
 
     param_values = {}
 
@@ -932,7 +998,7 @@ def get_most_perf_param_dict(pairings_df, metric):
         ]
         pairing_df = pairing_df.reset_index(drop=True)
         if len(pairing_df) == 0:
-            log.error(
+            lg.error(
                 "No pairings found for {} vs {}.".format(
                     format_dict(unique_pairing_df_row["value_a"]),
                     format_dict(unique_pairing_df_row["value_b"]),
@@ -944,13 +1010,13 @@ def get_most_perf_param_dict(pairings_df, metric):
         all_b_on_left = all(pairing_df["b_on_left"])
 
         if all_b_on_left & all_a_on_left:
-            log.error(len(pairing_df))
+            lg.error(len(pairing_df))
 
-            log.error(f"all_a_on_left: {all(pairing_df['a_on_left'])}")
-            log.error(f"all_a_on_left: {pairing_df['a_on_left'].value_counts()}")
+            lg.error(f"all_a_on_left: {all(pairing_df['a_on_left'])}")
+            lg.error(f"all_a_on_left: {pairing_df['a_on_left'].value_counts()}")
 
-            log.error(f"all_b_on_left: {all(pairing_df['b_on_left'])}")
-            log.error(f"all_b_on_left: {pairing_df['b_on_left'].value_counts()}")
+            lg.error(f"all_b_on_left: {all(pairing_df['b_on_left'])}")
+            lg.error(f"all_b_on_left: {pairing_df['b_on_left'].value_counts()}")
 
             raise ValueError("Both a and b cannot be on the left.")
 
@@ -1037,16 +1103,16 @@ def process_pairings(
         - pairings_df (pd.DataFrame): DataFrame containing the processed pairings
     """
 
-    if param_val_comb_dict_list is None or len(param_val_comb_dict_list) == 0:
+    if not param_val_comb_dict_list:
         raise ValueError("df_param_val_combs is None or empty")
 
-    if metric is None or metric == "":
+    if not metric:
         raise ValueError("metric is None or empty")
 
-    if metric_df is None or metric_df.empty:
+    if metric_df.empty:
         raise ValueError("metric_df is None or empty")
 
-    pairings_df = pd.DataFrame()
+    pairings_list = []
     for pair_a_dict, pair_b_dict in combinations(param_val_comb_dict_list, 2):
         a_b_df, metric_a_df, metric_b_df = process_pairing_df(
             metric, pair_a_dict, pair_b_dict, metric_df
@@ -1066,11 +1132,14 @@ def process_pairings(
         a_b_df["value_a"] = [pair_a_dict] * len(a_b_df)
         a_b_df["value_b"] = [pair_b_dict] * len(a_b_df)
 
-        pairings_df = pd.concat([pairings_df, a_b_df])
+        pairings_list.append(a_b_df)
 
+    if not pairings_list:
+        return pd.DataFrame()
+
+    pairings_df = pd.concat(pairings_list, ignore_index=True)
     pairings_df["possible_values"] = str(param_val_comb_dict_list)
     pairings_df["metric"] = metric
-    pairings_df = pairings_df.reset_index(drop=True)
 
     return pairings_df
 
@@ -1087,7 +1156,7 @@ def color_legend_text(
             colored = True
 
     if not colored:
-        log.warning(f"Could not find {text_value} in legend.")
+        lg.warning(f"Could not find {text_value} in legend.")
 
 
 def show_working_out(
@@ -1256,7 +1325,7 @@ def plot_most_performant_cdfs(axs, pairings_df, metric, sections, pairing_titles
             no_winner = True
 
         if not no_winner:
-            log.info(
+            lg.info(
                 f"\t[{section['start']} - {section['end']}] Winner: {most_perf_param_dict}"
             )
 
@@ -1531,36 +1600,22 @@ def process_pairing_df(
     if not pair_a_dict or not pair_b_dict:
         raise ValueError("Pairing dictionaries are None or empty.")
 
-    if pair_a_dict == {}:
-        raise ValueError("Pair A dictionary is empty.")
-
-    if pair_b_dict == {}:
-        raise ValueError("Pair B dictionary is empty.")
-
-    if metric_df is pd.DataFrame():
+    if metric_df.empty:
         raise ValueError("Metric dataframe is None or empty.")
 
-    if metric not in metric_df.columns:
-        raise ValueError(f"Metric {metric} not in dataframe.")
+    # Create boolean masks for filtering
+    mask_a = pd.Series(True, index=metric_df.index)
+    for key, value in pair_a_dict.items():
+        mask_a &= metric_df[key] == value
 
-    metric_a_df = filter_df_by_dict(metric_df, pair_a_dict)
-    metric_a_df = metric_a_df[metric]
-    metric_a_df = metric_a_df.dropna().reset_index(drop=True)
+    mask_b = pd.Series(True, index=metric_df.index)
+    for key, value in pair_b_dict.items():
+        mask_b &= metric_df[key] == value
 
-    if metric_a_df.empty:
-        log.error(
-            f"No {metric} data found for {format_param_dict_to_title(pair_a_dict)}."
-        )
-        return None, None, None
+    metric_a_df = metric_df.loc[mask_a, metric].dropna().reset_index(drop=True)
+    metric_b_df = metric_df.loc[mask_b, metric].dropna().reset_index(drop=True)
 
-    metric_b_df = filter_df_by_dict(metric_df, pair_b_dict)
-    metric_b_df = metric_b_df[metric]
-    metric_b_df = metric_b_df.dropna().reset_index(drop=True)
-
-    if metric_b_df.empty:
-        log.error(
-            f"No {metric} data found for {format_param_dict_to_title(pair_b_dict)}."
-        )
+    if metric_a_df.empty or metric_b_df.empty:
         return None, None, None
 
     res_a = scistats.ecdf(metric_a_df)
@@ -1569,37 +1624,36 @@ def process_pairing_df(
     error_margin_a = calculate_error_margin(metric_a_df)
     error_margin_b = calculate_error_margin(metric_b_df)
 
-    cdf_a_df = pd.DataFrame(
-        {
-            "quantile_a": list(res_a.cdf.quantiles),
-            "probability": list(res_a.cdf.probabilities),
-            "error_margin_a": error_margin_a,
-        }
-    ).reset_index(drop=True)
+    cdf_a_df = (
+        pd.DataFrame(
+            {
+                "quantile_a": list(res_a.cdf.quantiles),
+                "probability": list(res_a.cdf.probabilities),
+                "error_margin_a": error_margin_a,
+            }
+        )
+        .round({"probability": 2})
+        .drop_duplicates("probability", keep="first")
+    )
 
-    cdf_b_df = pd.DataFrame(
-        {
-            "quantile_b": list(res_b.cdf.quantiles),
-            "probability": list(res_b.cdf.probabilities),
-            "error_margin_b": error_margin_b,
-        }
-    ).reset_index(drop=True)
-
-    # Keep probabilities to 2 decimal places
-    for df in [cdf_a_df, cdf_b_df]:
-        df["probability"] = df["probability"].apply(lambda x: round(x, 2))
-
-        # Remove duplicate probabilities
-        df.drop_duplicates(subset="probability", keep="first", inplace=True)
+    cdf_b_df = (
+        pd.DataFrame(
+            {
+                "quantile_b": list(res_b.cdf.quantiles),
+                "probability": list(res_b.cdf.probabilities),
+                "error_margin_b": error_margin_b,
+            }
+        )
+        .round({"probability": 2})
+        .drop_duplicates("probability", keep="first")
+    )
 
     a_b_df = pd.merge(cdf_a_df, cdf_b_df, on="probability", how="outer")
-
-    for x in ["a", "b"]:
-        a_b_df[f"quantile_{x}"] = a_b_df[f"quantile_{x}"].interpolate()
-
+    a_b_df[["quantile_a", "quantile_b"]] = a_b_df[
+        ["quantile_a", "quantile_b"]
+    ].interpolate()
     a_b_df["error_margin_a"] = error_margin_a
     a_b_df["error_margin_b"] = error_margin_b
-
     a_b_df.dropna(subset=["quantile_a", "quantile_b"], inplace=True)
 
     for x in ["a", "b"]:
@@ -1612,26 +1666,8 @@ def process_pairing_df(
 
     a_b_df["b_low_a_high_diff"] = a_b_df["quantile_b_low"] - a_b_df["quantile_a_high"]
     a_b_df["a_low_b_high_diff"] = a_b_df["quantile_a_low"] - a_b_df["quantile_b_high"]
-
     a_b_df["a_on_left"] = a_b_df["b_low_a_high_diff"] > 0
     a_b_df["b_on_left"] = a_b_df["a_low_b_high_diff"] > 0
-
-    # Reorder columns to: probablity, a, b
-    a_b_df = a_b_df[
-        [
-            "probability",
-            "quantile_a",
-            "quantile_a_low",
-            "quantile_a_high",
-            "a_on_left",
-            "quantile_b",
-            "quantile_b_low",
-            "quantile_b_high",
-            "b_on_left",
-            "b_low_a_high_diff",
-            "a_low_b_high_diff",
-        ]
-    ]
 
     return a_b_df, metric_a_df, metric_b_df
 
@@ -1675,11 +1711,11 @@ def format_dict(dictionary, separator="="):
 
 def filter_df_by_dict(df, dict):
     if not dict:
-        log.error("No dict passed.")
+        lg.error("No dict passed.")
         return df
 
     if len(dict) == 0:
-        log.error("No filtering required.")
+        lg.error("No filtering required.")
         return df
 
     for key, value in dict.items():
@@ -1745,92 +1781,82 @@ def process_all_pairings(
     sections: list = [],
 ):
     param_str = " vs ".join(varied_param_list)
-
-    all_pairings_df = pd.DataFrame()
-    all_pairings_df_filepath = "./output/parameter_analysis_tool/{}/{}".format(
-        param_str, "all_pairings.parquet"
+    all_pairings_df_filepath = (
+        f"./output/parameter_analysis_tool/{param_str}/all_pairings.parquet"
     )
 
-    if not OVERWRITE_PROCESSING["all_pairings"] and os.path.exists(
+    if not d_config["overwrite_processing"]["all_pairings"] and os.path.exists(
         all_pairings_df_filepath
     ):
-        log.info(f"Loading all pairings from {all_pairings_df_filepath}...")
         all_pairings_df = pd.read_parquet(all_pairings_df_filepath)
+        lg.info(
+            f"Loaded {len(all_pairings_df)} pairings from {all_pairings_df_filepath}..."
+        )
         return all_pairings_df
 
-    for exp_var_dict_i, exp_variation_dict in enumerate(exp_variation_dict_list):
-        exp_variation_str = format_param_dict_to_title(exp_variation_dict)
-
-        log.info(
-            # e.g. [1/2] [Data(B)=1000, Pubs=1, Subs=1] Processing pairings...
-            "[{}/{}] {}".format(
-                exp_var_dict_i, len(exp_variation_dict_list), exp_variation_str
-            )
+    if not exp_variation_dict_list:
+        lg.warning(
+            "exp_variation_dict_list is empty. Cannot determine unvaried parameters."
         )
+        return pd.DataFrame()
 
-        variation_df = filter_df_by_dict(variations_df, exp_variation_dict)
+    unvaried_params = list(exp_variation_dict_list[0].keys())
+
+    grouped_variations = variations_df.groupby(unvaried_params)
+    all_pairings_list = []
+
+    for i, (group_keys, group_df) in enumerate(grouped_variations):
+        if isinstance(group_keys, tuple):
+            exp_variation_dict = dict(zip(unvaried_params, group_keys))
+        else:
+            exp_variation_dict = {unvaried_params[0]: group_keys}
+
+        # Cast all np types to native python types for consistency
+        for key, value in exp_variation_dict.items():
+            if isinstance(value, (np.integer, np.floating)):
+                exp_variation_dict[key] = value.item()
+            elif isinstance(value, np.bool_):
+                exp_variation_dict[key] = bool(value)
+
+        exp_variation_str = format_param_dict_to_title(exp_variation_dict)
+        lg.info(f"[{i+1}/{len(grouped_variations)}] {exp_variation_str}")
 
         param_variations_dict_list = (
-            variation_df[varied_param_list]
-            .drop_duplicates()
-            .reset_index(drop=True)
-            .to_dict(orient="records")
+            group_df[varied_param_list].drop_duplicates().to_dict(orient="records")
         )
-
         param_variations_dict_list = sort_list_of_dicts(param_variations_dict_list)
 
         if len(param_variations_dict_list) <= 1:
-            log.warning(
-                # Example
-                # [Pubs=1, Subs=1] has 1 variation which is not enough for pairwise comparison.
-                "{} has {} {} which is not enough for pairwise comparison.".format(
-                    exp_variation_str,
-                    len(param_variations_dict_list),
-                    (
-                        "variation"
-                        if len(param_variations_dict_list) == 1
-                        else "variations"
-                    ),
-                )
+            lg.warning(
+                f"{exp_variation_str} has {len(param_variations_dict_list)} variations, not enough for pairwise comparison."
             )
             continue
 
         for metric in metric_cols:
-            status_prefix = "[{}/{}] [{}] [{}]".format(
-                exp_var_dict_i + 1,
-                len(exp_variation_dict_list),
-                exp_variation_str,
-                metric.upper(),
-            )
+            status_prefix = f"[{i+1}/{len(grouped_variations)}] [{exp_variation_str}] [{metric.upper()}]"
 
-            metric_df = variation_df.copy()
-            metric_df = metric_df[[metric] + varied_param_list]
-            metric_df = metric_df.drop_duplicates().reset_index(drop=True)
+            metric_df = (
+                group_df[[metric] + varied_param_list]
+                .drop_duplicates()
+                .reset_index(drop=True)
+            )
             if metric_df.empty:
-                log.error(f"{status_prefix} No data found for {metric}.")
+                lg.error(f"{status_prefix} No data found for {metric}.")
                 continue
 
-            log.info(f"{status_prefix} Processing pairings...")
+            lg.info(f"{status_prefix} Processing pairings...")
             pairings_df = process_pairings(
                 param_variations_dict_list, metric, metric_df
             )
-            pairings_df["exp_variation"] = str(exp_variation_dict)
+
             if pairings_df is None or pairings_df.empty:
-                log.error(f"{status_prefix} Pairings df came back empty.")
+                lg.error(f"{status_prefix} Pairings df came back empty.")
                 continue
 
-            all_pairings_df = pd.concat(
-                [all_pairings_df, pairings_df], ignore_index=True
-            )
+            pairings_df["exp_variation"] = str(exp_variation_dict)
+            all_pairings_list.append(pairings_df)
 
-            if exp_var_dict_i % 10 == 0:
-                write_df(
-                    all_pairings_df,
-                    f"./output/parameter_analysis_tool/{param_str}/all_pairings.parquet",
-                )
-
-            log.info(f"{status_prefix} Plotting working out...")
-
+            lg.info(f"{status_prefix} Plotting working out...")
             if len(param_variations_dict_list) < 10:
                 show_working_out(
                     metric,
@@ -1840,14 +1866,17 @@ def process_all_pairings(
                     sections,
                     exp_variation_dict,
                 )
-
             else:
-                log.warning(
-                    "{} has {} variations. Skipping plotting...".format(
-                        exp_variation_str, len(param_variations_dict_list)
-                    )
+                lg.warning(
+                    f"{exp_variation_str} has {len(param_variations_dict_list)} variations. Skipping plotting..."
                 )
-                continue
+
+    if not all_pairings_list:
+        return pd.DataFrame()
+
+    all_pairings_df = pd.concat(all_pairings_list, ignore_index=True)
+
+    write_df(all_pairings_df, all_pairings_df_filepath)
 
     return all_pairings_df
 
@@ -1862,7 +1891,11 @@ def classify_pairings(
     all_pairings_df = all_pairings_df.dropna().reset_index(drop=True)
 
     assert "metric" in all_pairings_df.columns
-    assert all_pairings_df["metric"].nunique() == len(METRIC_COLS)
+    assert all_pairings_df["metric"].nunique() == len(
+        METRIC_COLS
+    ), "metrics in df: {}\nmetrics in config: {}".format(
+        all_pairings_df["metric"].unique(), METRIC_COLS
+    )
 
     most_perf_pairings_df = get_most_perf_pairings(all_pairings_df, varied_param_list)
 
@@ -1874,7 +1907,7 @@ def classify_pairings(
     unique_possible_values = sorted(unique_possible_values, key=lambda x: len(x))
 
     for possible_values in unique_possible_values:
-        log.info(
+        lg.info(
             "Classifying pairings for {}...".format(
                 [format_param_dict_to_title(val) for val in possible_values]
             )
@@ -2106,7 +2139,7 @@ def create_results_report(
     with open(f"{output_dir}/{report_filename}", "w") as f:
         f.write(report_content)
 
-    log.info(f"Results report saved to {output_dir}/{report_filename}.")
+    lg.info(f"Results report saved to {output_dir}/{report_filename}.")
 
 
 def plot_classification_bar_chart(
@@ -2158,12 +2191,12 @@ def plot_classification_bar_chart(
     plt.savefig(filepath)
     plt.close()
 
-    log.info(f"Classification bar chart saved to {filepath}.")
+    lg.info(f"Classification bar chart saved to {filepath}.")
 
 
 def process_exp_variation_into_cols(section_pairings_df: pd.DataFrame = pd.DataFrame()):
     if section_pairings_df.empty:
-        log.error("Section pairings dataframe is empty.")
+        lg.error("Section pairings dataframe is empty.")
         return section_pairings_df
 
     for df_i, df_row in section_pairings_df.iterrows():
@@ -2194,7 +2227,7 @@ def plot_param_distribution_per_section(
     output_path = f"{output_dir}/{section_title} histogram.png"
     os.makedirs(output_dir, exist_ok=True)
 
-    exp_param_cols = [col for col in df.columns if col in PARAM_COLS]
+    exp_param_cols = [col for col in df.columns if col in d_config["parameter_columns"]]
 
     fig, axs = plt.subplots(
         nrows=1, ncols=len(exp_param_cols), figsize=(5 * len(exp_param_cols), 5)
@@ -2232,7 +2265,7 @@ def plot_param_distribution_per_section(
 
     plt.tight_layout()
     plt.savefig(output_path)
-    log.info(
+    lg.info(
         f"Parameter distribution plot for section {section_title} saved to {output_path}."
     )
 
@@ -2357,7 +2390,7 @@ def print_most_perf_pairings(
                 ),
             )
 
-        log.info(
+        lg.info(
             "Results for {} saved to\n\t{}/{}.md".format(
                 metric_col, param_str, md_filepath.replace("/", "/\n\t")
             )
@@ -2379,10 +2412,10 @@ def get_most_perf_pairings(
         param_str, most_perf_pairings_filename
     )
 
-    if not OVERWRITE_PROCESSING["most_perf_pairings"] and os.path.exists(
+    if not d_config["overwrite_processing"]["most_perf_pairings"] and os.path.exists(
         most_perf_pairings_filepath
     ):
-        log.info("Loading most performant pairings...")
+        lg.info("Loading most performant pairings...")
         most_perf_pairings_df = pd.read_parquet(most_perf_pairings_filepath)
 
     else:
@@ -2445,13 +2478,13 @@ def process_most_performant_pairings(all_pairings_df: pd.DataFrame = pd.DataFram
         ].reset_index(drop=True)
 
         if metric_pairings_df.empty:
-            log.warning(f"{metric_col_i_str} No pairings found.")
+            lg.warning(f"{metric_col_i_str} No pairings found.")
             continue
 
         for section_i, section in enumerate(SECTIONS):
             section_i_str = f"[{section_i + 1}/{len(SECTIONS)} {section['name']}]"
 
-            log.info(f"{metric_col_i_str} {section_i_str} Processing section...")
+            lg.info(f"{metric_col_i_str} {section_i_str} Processing section...")
 
             section_pairings_df = metric_pairings_df.copy()
             section_pairings_df = section_pairings_df[
@@ -2460,7 +2493,7 @@ def process_most_performant_pairings(all_pairings_df: pd.DataFrame = pd.DataFram
             ].reset_index(drop=True)
 
             if section_pairings_df.empty:
-                log.warning(
+                lg.warning(
                     f"{metric_col_i_str} {section_i_str} section_pairings_df is empty."
                 )
                 continue
@@ -2494,7 +2527,7 @@ def process_most_performant_pairings(all_pairings_df: pd.DataFrame = pd.DataFram
                 most_perf_section_pairings_df is None
                 or most_perf_section_pairings_df.empty
             ):
-                log.warning(
+                lg.warning(
                     f"{metric_col_i_str} {section_i_str} No most performant pairings found."
                 )
                 continue
@@ -2630,7 +2663,7 @@ def plot_param_value_distribution_per_classification(
     plt.savefig(f"{filepath}.pdf")
     plt.close()
 
-    log.info(f"Plot saved as {filepath}")
+    lg.info(f"Plot saved as {filepath}")
 
 
 def get_chi_square_df(
@@ -2708,7 +2741,7 @@ def do_chi_squared_test(
     plt.savefig(f"{filepath}.pdf")
     plt.close()
 
-    log.info(f"Plot saved as {filepath}")
+    lg.info(f"Plot saved as {filepath}")
 
     return chi_square_results
 
@@ -2816,7 +2849,7 @@ def do_cramers_v_test(
         )
 
     except ValueError as e:
-        log.error(f"Could not plot Cramer's V values:\n\t{e}")
+        lg.error(f"Could not plot Cramer's V values:\n\t{e}")
 
     return cramers_v_vals
 
@@ -2847,7 +2880,7 @@ def plot_cramers_v_values(
     plt.savefig(f"{filepath}.pdf")
     plt.close()
 
-    log.info(f"Plot saved as {filepath}")
+    lg.info(f"Plot saved as {filepath}")
 
 
 def add_total_row_to_df(df: pd.DataFrame = pd.DataFrame()):
@@ -2985,7 +3018,7 @@ def do_correlation_analysis(
     with open(md_filepath, "w") as f:
         f.write(md_table)
 
-    log.info(
+    lg.info(
         f"Correlation analysis saved to {param_str}/{possible_vals_dirname_str}/correlation_analysis.md"
     )
 
@@ -3102,16 +3135,16 @@ def plot_input_distribution(df: pd.DataFrame = pd.DataFrame()):
 
     if df is None or df.empty:
         raise ValueError("No dataframe passed to plot_input_distribution().")
-    if not PARAM_COLS:
+    if not d_config["parameter_columns"]:
         raise ValueError("No parameter columns defined in PARAM_COLS.")
 
-    for col in PARAM_COLS:
+    for col in d_config["parameter_columns"]:
         if col not in df.columns:
             raise ValueError(f"Parameter column {col} not found in dataframe.")
 
-    log.info("Plotting input parameter distribution...")
+    lg.info("Plotting input parameter distribution...")
 
-    df_params = df[PARAM_COLS].copy()
+    df_params = df[d_config["parameter_columns"]].copy()
     df_params = df_params.drop_duplicates().reset_index(drop=True)
     df_params["datalen_bytes"] = df_params["datalen_bytes"].astype(int)
     df_params["pub_count"] = df_params["pub_count"].astype(int)
@@ -3168,80 +3201,13 @@ def plot_input_distribution(df: pd.DataFrame = pd.DataFrame()):
         plt.savefig(f"{output_path}.pdf")
         plt.close()
 
-        log.info(f"Input parameter distribution plot saved to {output_path}.")
-
-
-def main():
-    if not DEV_MODE:
-        df = pd.read_parquet(DS_PATH)
-
-    else:
-        df = create_test_sample_df()
-
-    if not validate_experiment_names(df):
-        update_experiment_names(df)
-
-    df = filter_datasets(df)
-
-    df = filter_parameter_values(df)
-
-    df = filter_parameter_values_interactively(df)
-
-    if not DEV_MODE:
-        varied_param_list = get_params_to_vary(df)
-        if not varied_param_list:
-            raise ValueError("No varied parameters found.")
-        if len(varied_param_list) == 0:
-            raise ValueError("No varied parameters found.")
-    else:
-        varied_param_list = DEV_CONFIG["varied_param_list"]
-
-    [
-        make_needed_folders(" vs ".join(varied_param_list), metric)
-        for metric in METRIC_COLS
-    ]
-
-    plot_input_distribution(df)
-
-    exp_variation_dict_list = get_variations(df, varied_param_list)
-    if len(exp_variation_dict_list) == 0:
-        raise ValueError("No experiment variations found.")
-
-    variations_df = get_variations_df(df, exp_variation_dict_list, varied_param_list)
-    if variations_df is None or variations_df.empty:
-        raise ValueError("Variations dataframe is None or empty.")
-
-    # parameter value combinations
-    param_val_comb_dict_list = get_param_values(variations_df, varied_param_list)
-    if param_val_comb_dict_list is None or len(param_val_comb_dict_list) == 0:
-        raise ValueError("Parameter value combinations list is None or empty.")
-
-    param_val_comb_dict_list = sort_list_of_dicts(param_val_comb_dict_list)
-    if param_val_comb_dict_list is None or len(param_val_comb_dict_list) == 0:
-        raise ValueError("Sorted parameter value combinations list is None or empty.")
-
-    all_pairings_df = process_all_pairings(
-        variations_df, exp_variation_dict_list, varied_param_list, METRIC_COLS, SECTIONS
-    )
-
-    most_perf_pairings_df = classify_pairings(all_pairings_df, varied_param_list)
-
-    for metric in METRIC_COLS:
-        create_results_report(metric, most_perf_pairings_df, varied_param_list)
-
-    if not DEV_MODE:
-        if click.confirm("Do you want to explore the classifications?", default=True):
-            explore_classifications(most_perf_pairings_df, varied_param_list)
-
-    else:
-        if DEV_CONFIG["explore_classifications"]:
-            explore_classifications(most_perf_pairings_df, varied_param_list)
+        lg.info(f"Input parameter distribution plot saved to {output_path}.")
 
 
 if __name__ == "__main__":
     with timer.Timer():
         try:
-            main()
+            main(d_config)
         except Exception as e:
             Notifier.notify(f"Error: {str(e)}", title="Parameter Analysis Tool")
-            log.exception(e)
+            lg.exception(e)
