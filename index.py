@@ -8,6 +8,7 @@ import sys
 import ast
 import logging
 import pandas as pd
+import polars as pl
 import numpy as np
 import timer
 import warnings
@@ -18,8 +19,9 @@ import seaborn as sns
 import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
 
-from utility import get_date_timestamp, create_markdown_table
 from config import d_config
+from utility import get_date_timestamp, create_markdown_table
+
 from collections import Counter
 from pync import Notifier
 from math import sqrt
@@ -64,16 +66,19 @@ PARAM_COLS = [
 
 
 def main(D_CONFIG):
-    df = pd.read_parquet(d_config["data_path"])
-    lg.debug(f"Loaded dataset ({len(df.index):,}) rows)")
+    df = pl.read_parquet(d_config["data_path"])
+    lg.debug(f"Loaded dataset ({df.height}) rows)")
 
     if not validate_experiment_names(df):
         update_experiment_names(df)
 
-    df["datalen_bytes"] = df["datalen_bytes"].astype(int)
-    df["pub_count"] = df["pub_count"].astype(int)
-    df["sub_count"] = df["sub_count"].astype(int)
-    df["durability"] = df["durability"].astype(int)
+    ls_cols_to_cast_to_int = [
+        "datalen_bytes",
+        "pub_count",
+        "sub_count",
+        "durability",
+    ]
+    df = df.with_columns([pl.col(col).cast(pl.Int64) for col in ls_cols_to_cast_to_int])
 
     # df = filter_datasets(df)
 
@@ -372,25 +377,20 @@ def get_variations(df, params_to_vary):
     4. Return the list of variations which is a df with unvaried param combinations
     """
 
-    param_df = df[PARAM_COLS].drop_duplicates().reset_index(drop=True)
+    param_df = df[PARAM_COLS].unique()
     unvaried_params = [param for param in PARAM_COLS if param not in params_to_vary]
 
     if not unvaried_params:
         return []
 
-    # Group by the unvaried parameters and count the number of variations for each group.
-    # A "variation" is a unique combination of the "params_to_vary".
-    # The size of each group gives us this count.
-    variation_counts = param_df.groupby(unvaried_params).size()
+    variations_df = (
+        param_df.group_by(unvaried_params)
+        .len()
+        .filter(pl.col("len") >= 2)
+        .select(unvaried_params)
+    )
 
-    # We are only interested in the groups that have at least 2 variations to compare.
-    sufficient_variations = variation_counts[variation_counts >= 2]
-
-    # The index of the resulting series contains the unvaried parameter combinations.
-    # We can reset the index to get a DataFrame and then convert it to a list of dicts.
-    variations_df = sufficient_variations.reset_index()[unvaried_params]
-
-    return variations_df.to_dict("records")
+    return variations_df.to_dict()
 
 
 def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
@@ -3120,10 +3120,10 @@ def explore_classifications(
         )
 
 
-def plot_input_distribution(df: pd.DataFrame = pd.DataFrame()):
+def plot_input_distribution(df: pl.DataFrame = pl.DataFrame()):
     # Plots the distribution of input parameters
 
-    if df is None or df.empty:
+    if df is None or df.is_empty():
         raise ValueError("No dataframe passed to plot_input_distribution().")
     if not PARAM_COLS:
         raise ValueError("No parameter columns defined in PARAM_COLS.")
@@ -3134,15 +3134,22 @@ def plot_input_distribution(df: pd.DataFrame = pd.DataFrame()):
 
     lg.info("Plotting input parameter distribution...")
 
-    df_params = df[PARAM_COLS].copy()
-    df_params = df_params.drop_duplicates().reset_index(drop=True)
-    df_params["datalen_bytes"] = df_params["datalen_bytes"].astype(int)
-    df_params["pub_count"] = df_params["pub_count"].astype(int)
-    df_params["sub_count"] = df_params["sub_count"].astype(int)
-    df_params["durability"] = df_params["durability"].astype(str)
+    df_params = df[PARAM_COLS].clone()
+    df_params = df_params.unique()
+
+    ls_int_cols = ["datalen_bytes", "pub_count", "sub_count", "durability"]
+    df_params = df_params.with_columns(
+        [pl.col(col).cast(pl.Int64) for col in ls_int_cols]
+    )
+    ls_bool_cols = ["use_reliable", "use_multicast"]
+    df_params = df_params.with_columns(
+        [pl.col(col).cast(pl.Boolean) for col in ls_bool_cols]
+    )
+
+    # df_params = df_params.with_columns([pl.col("durability").cast(pl.Categorical)])
 
     df_params = df_params.rename(
-        columns={
+        {
             "datalen_bytes": "Data Length (B)",
             "pub_count": "Publisher Count",
             "sub_count": "Subscriber Count",
@@ -3156,7 +3163,7 @@ def plot_input_distribution(df: pd.DataFrame = pd.DataFrame()):
     # Create 2 chunks of 3 parameters each
     lls_chunks = [df_params.columns[i : i + 3] for i in range(0, num_params, 3)]
     for i_chunk, ls_chunk in enumerate(lls_chunks):
-        df_chunk = df_params[list(ls_chunk)].copy()
+        df_chunk = df_params[list(ls_chunk)].clone()
         fig, axs = plt.subplots(ncols=1, nrows=3, figsize=(8, 12))
 
         for i, col in enumerate(df_chunk.columns):
