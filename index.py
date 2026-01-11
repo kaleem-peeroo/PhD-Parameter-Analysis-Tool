@@ -127,15 +127,17 @@ def main(D_CONFIG):
     )
 
     for metric in d_config["metric_columns"]:
-        create_results_report(metric, most_perf_pairings_df, varied_param_list)
+        create_results_report(
+            metric, most_perf_pairings_df, varied_param_list, d_config
+        )
 
     if not d_config["dev_mode"]:
         if click.confirm("Do you want to explore the classifications?", default=True):
-            explore_classifications(most_perf_pairings_df, varied_param_list)
+            explore_classifications(most_perf_pairings_df, varied_param_list, d_config)
 
     else:
         if d_config["dev_config"]["explore_classifications"]:
-            explore_classifications(most_perf_pairings_df, varied_param_list)
+            explore_classifications(most_perf_pairings_df, varied_param_list, d_config)
 
 
 def update_experiment_names(df):
@@ -1896,12 +1898,14 @@ def classify_pairings(
 
     assert "metric" in all_pairings_df.columns
     assert all_pairings_df["metric"].nunique() == len(
-        d_config["metric_cols"]
+        d_config["metric_columns"]
     ), "metrics in df: {}\nmetrics in config: {}".format(
-        all_pairings_df["metric"].unique(), d_config["metric_cols"]
+        all_pairings_df["metric"].unique(), d_config["metric_columns"]
     )
 
-    most_perf_pairings_df = get_most_perf_pairings(all_pairings_df, varied_param_list)
+    most_perf_pairings_df = get_most_perf_pairings(
+        all_pairings_df, varied_param_list, d_config
+    )
 
     if most_perf_pairings_df is None or most_perf_pairings_df.empty:
         raise ValueError("No most performant pairings found.")
@@ -1923,7 +1927,11 @@ def classify_pairings(
         ]
 
         print_most_perf_pairings(
-            possible_values_df, varied_param_list, "all_sections", possible_values
+            possible_values_df,
+            varied_param_list,
+            "all_sections",
+            possible_values,
+            d_config,
         )
 
     return most_perf_pairings_df
@@ -1994,13 +2002,15 @@ def get_unique_possible_values(df: pd.DataFrame = pd.DataFrame()):
     return unique_possible_values
 
 
-def populate_cramers_v_df_col_names(cramers_v_df: pd.DataFrame = pd.DataFrame()):
+def populate_cramers_v_df_col_names(
+    cramers_v_df: pd.DataFrame = pd.DataFrame(), d_config: dict = {}
+):
     cramers_v_df_col_count = len(cramers_v_df.columns)
     # Rename index to Parameter
     cramers_v_df.index.name = "Parameter"
 
     column_names = []
-    for section in SECTIONS[:cramers_v_df_col_count]:
+    for section in d_config["sections"][:cramers_v_df_col_count]:
         section_start = section["start"]
         section_end = section["end"]
 
@@ -2019,11 +2029,13 @@ def populate_cramers_v_df_col_names(cramers_v_df: pd.DataFrame = pd.DataFrame())
     return cramers_v_df
 
 
-def populate_chi_square_df_col_names(correlation_df: pd.DataFrame = pd.DataFrame()):
+def populate_chi_square_df_col_names(
+    correlation_df: pd.DataFrame = pd.DataFrame(), d_config: dict = {}
+):
     correlation_col_count = len(correlation_df.columns)
 
     column_names = []
-    for section in SECTIONS[: correlation_col_count // 3]:
+    for section in d_config["sections"][: correlation_col_count // 3]:
         section_start = section["start"]
         section_end = section["end"]
 
@@ -2044,11 +2056,13 @@ def populate_chi_square_df_col_names(correlation_df: pd.DataFrame = pd.DataFrame
     return correlation_df
 
 
-def populate_classification_col_names(classification_df: pd.DataFrame = pd.DataFrame()):
+def populate_classification_col_names(
+    classification_df: pd.DataFrame = pd.DataFrame(), d_config: dict = {}
+):
     classification_col_count = len(classification_df.columns)
 
     column_names = []
-    for section in SECTIONS[:classification_col_count]:
+    for section in d_config["sections"][:classification_col_count]:
         section_start = section["start"]
         section_end = section["end"]
 
@@ -2071,6 +2085,7 @@ def create_results_report(
     metric: str = "latency_us",
     most_perf_pairings_df: pd.DataFrame = pd.DataFrame(),
     varied_param_list: list = [],
+    d_config: dict = {},
 ):
     if most_perf_pairings_df.empty:
         raise ValueError("Most performant pairings dataframe is empty.")
@@ -2104,7 +2119,7 @@ def create_results_report(
         classification_df = pd.DataFrame()
         chi_square_df = pd.DataFrame()
         cramers_v_df = pd.DataFrame()
-        for section in SECTIONS:
+        for section in d_config["sections"]:
             section_start = section["start"]
             section_end = section["end"]
 
@@ -2126,15 +2141,17 @@ def create_results_report(
             cramers_v_df = get_cramers_v_results_df(section_df, cramers_v_df)
 
         classification_df.replace(np.nan, "", inplace=True)
-        classification_df = populate_classification_col_names(classification_df)
+        classification_df = populate_classification_col_names(
+            classification_df, d_config
+        )
         classification_df.sort_index(inplace=True)
         classification_df = add_total_row_to_df(classification_df)
 
         chi_square_df.replace(np.nan, "", inplace=True)
-        chi_square_df = populate_chi_square_df_col_names(chi_square_df)
+        chi_square_df = populate_chi_square_df_col_names(chi_square_df, d_config)
 
         cramers_v_df.replace(np.nan, "", inplace=True)
-        cramers_v_df = populate_cramers_v_df_col_names(cramers_v_df)
+        cramers_v_df = populate_cramers_v_df_col_names(cramers_v_df, d_config)
 
         for df in [classification_df, chi_square_df, cramers_v_df]:
             report_content += df.to_markdown(index=True)
@@ -2304,8 +2321,9 @@ def print_most_perf_pairings(
     varied_param_list: list = [],
     section_title: str = "all_sections",
     possible_values: list = [],
+    d_config: dict = {},
 ):
-    for metric_col in METRIC_COLS:
+    for metric_col in d_config["metric_columns"]:
         metric_pairings_df = most_perf_pairings_df.copy()
         metric_pairings_df = metric_pairings_df[
             most_perf_pairings_df["metric"] == metric_col
@@ -2317,7 +2335,7 @@ def print_most_perf_pairings(
         )
 
         results_df = pd.DataFrame()
-        for section in SECTIONS:
+        for section in d_config["sections"]:
             section_start = section["start"]
             section_end = section["end"]
 
@@ -2405,7 +2423,9 @@ def print_most_perf_pairings(
 
 
 def get_most_perf_pairings(
-    all_pairings_df: pd.DataFrame = pd.DataFrame(), varied_param_list: list = []
+    all_pairings_df: pd.DataFrame = pd.DataFrame(),
+    varied_param_list: list = [],
+    d_config: dict = {},
 ):
     if not varied_param_list:
         raise ValueError("No varied parameter list passed to get_most_perf_pairings().")
@@ -2423,7 +2443,9 @@ def get_most_perf_pairings(
         most_perf_pairings_df = pd.read_parquet(most_perf_pairings_filepath)
 
     else:
-        most_perf_pairings_df = process_most_performant_pairings(all_pairings_df)
+        most_perf_pairings_df = process_most_performant_pairings(
+            all_pairings_df, d_config
+        )
 
         most_perf_pairings_df.to_parquet(most_perf_pairings_filepath, index=False)
 
@@ -2464,7 +2486,9 @@ def get_most_perf_pairing_per_exp_var(
     return most_perf_pairings_df
 
 
-def process_most_performant_pairings(all_pairings_df: pd.DataFrame = pd.DataFrame()):
+def process_most_performant_pairings(
+    all_pairings_df: pd.DataFrame = pd.DataFrame(), d_config: dict = {}
+):
     if all_pairings_df.empty:
         raise ValueError("No pairings found.")
 
@@ -2473,8 +2497,10 @@ def process_most_performant_pairings(all_pairings_df: pd.DataFrame = pd.DataFram
 
     most_perf_pairings_df = pd.DataFrame()
 
-    for metric_col_i, metric in enumerate(METRIC_COLS):
-        metric_col_i_str = f"[{metric_col_i + 1}/{len(METRIC_COLS)} {metric.upper()}]"
+    for metric_col_i, metric in enumerate(d_config["metric_columns"]):
+        metric_col_i_str = (
+            f"[{metric_col_i + 1}/{len(d_config['metric_columns'])} {metric.upper()}]"
+        )
 
         metric_pairings_df = all_pairings_df.copy()
         metric_pairings_df = metric_pairings_df[
@@ -2485,8 +2511,10 @@ def process_most_performant_pairings(all_pairings_df: pd.DataFrame = pd.DataFram
             lg.warning(f"{metric_col_i_str} No pairings found.")
             continue
 
-        for section_i, section in enumerate(SECTIONS):
-            section_i_str = f"[{section_i + 1}/{len(SECTIONS)} {section['name']}]"
+        for section_i, section in enumerate(d_config["sections"]):
+            section_i_str = (
+                f"[{section_i + 1}/{len(d_config['sections'])} {section['name']}]"
+            )
 
             lg.info(f"{metric_col_i_str} {section_i_str} Processing section...")
 
@@ -3028,7 +3056,9 @@ def do_correlation_analysis(
 
 
 def explore_classifications(
-    most_perf_pairings_df: pd.DataFrame = pd.DataFrame(), varied_param_list: list = []
+    most_perf_pairings_df: pd.DataFrame = pd.DataFrame(),
+    varied_param_list: list = [],
+    d_config: dict = {},
 ):
     """
     - Get section from user
@@ -3083,6 +3113,7 @@ def explore_classifications(
                 int(section_end * 100),
             ),
             possible_values,
+            d_config,
         )
 
         variations_df = section_most_perf_pairings_df.copy()
