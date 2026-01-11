@@ -1,5 +1,5 @@
 d_config = {
-    "data_path": "/Users/kaleempeeroo/PhD/Datasets/ML/3PI_No_Noise_PCG_100B_1KB.parquet",
+    "data_path": "/Users/kaleempeeroo/PhD/Datasets/ML/combined_no_noise_sample.parquet",
     "parameter_columns": [
         "datalen_bytes",
         "pub_count",
@@ -9,14 +9,7 @@ d_config = {
         "durability",
     ],
     "metric_columns": ["latency_us"],
-    "undesired_datasets": [
-        "3PI ML 6Mbps",
-        "3PI ML 8Mbps",
-        "5PI ML 24Mbps",
-        "5PI ML 71Mbps",
-        "5PI Mcast 1P3S BW High",
-        "5PI Mcast 1P3S BW Medium",
-    ],
+    "undesired_datasets": [],
     "sections": [
         {"name": "0_to_5", "start": 0, "end": 0.05},
         {"name": "5_to_95", "start": 0.05, "end": 0.95},
@@ -24,9 +17,9 @@ d_config = {
         {"name": "0_to_100", "start": 0, "end": 1},
     ],
     "overwrite_processing": {
-        "variations": True,
-        "all_pairings": True,
-        "most_perf_pairings": True,
+        "variations": False,
+        "all_pairings": False,
+        "most_perf_pairings": False,
     },
     "dev_mode": True,
     "dev_config": {
