@@ -53,6 +53,15 @@ lg = logging.getLogger("rich")
 plt_logger = logging.getLogger("matplotlib")
 plt_logger.setLevel(logging.ERROR)
 
+PARAM_COLS = [
+    "datalen_bytes",
+    "pub_count",
+    "sub_count",
+    "use_reliable",
+    "use_multicast",
+    "durability",
+]
+
 
 def main(D_CONFIG):
     df = pd.read_parquet(d_config["data_path"])
@@ -113,7 +122,9 @@ def main(D_CONFIG):
         d_config["sections"],
     )
 
-    most_perf_pairings_df = classify_pairings(all_pairings_df, varied_param_list)
+    most_perf_pairings_df = classify_pairings(
+        all_pairings_df, varied_param_list, d_config
+    )
 
     for metric in d_config["metric_columns"]:
         create_results_report(metric, most_perf_pairings_df, varied_param_list)
@@ -247,7 +258,7 @@ def describe_df(df):
     datasets = df["dataset"].unique().tolist()
     stats[f"datasets ({len(datasets)})"] = datasets
 
-    stats["params"] = d_config["parameter_columns"]
+    stats["params"] = PARAM_COLS
     stats["metrics"] = METRIC_COLS
 
     param_stats = describe_params(df)
@@ -278,7 +289,7 @@ def describe_params(df):
     # log.info("Describing parameters...")
     param_stats = {}
 
-    for param in d_config["parameter_columns"]:
+    for param in PARAM_COLS:
         values = df[param].unique().tolist()
         values = sorted(values)
         param_stats[f"{param} ({len(values)})"] = values
@@ -296,7 +307,7 @@ def plot_param_distributions(df):
     # Set fontsize to 14 for plt
     plt.rcParams.update({"font.size": 14})
 
-    for param_i, param in enumerate(d_config["parameter_columns"]):
+    for param_i, param in enumerate(PARAM_COLS):
         # Terminal Plotting with Plotext
         subplot_x = param_i % 3 + 1
         subplot_y = param_i // 3 + 1
@@ -314,7 +325,7 @@ def plot_param_distributions(df):
 
     pltx.show()
 
-    for param_i, param in enumerate(d_config["parameter_columns"]):
+    for param_i, param in enumerate(PARAM_COLS):
         # Matplotlib Plotting with Pyplot
         subplot_x = param_i % 3 + 1
         subplot_y = param_i // 3 + 1
@@ -364,12 +375,8 @@ def get_variations(df, params_to_vary):
     4. Return the list of variations which is a df with unvaried param combinations
     """
 
-    param_df = (
-        df[d_config["parameter_columns"]].drop_duplicates().reset_index(drop=True)
-    )
-    unvaried_params = [
-        param for param in d_config["parameter_columns"] if param not in params_to_vary
-    ]
+    param_df = df[PARAM_COLS].drop_duplicates().reset_index(drop=True)
+    unvaried_params = [param for param in PARAM_COLS if param not in params_to_vary]
 
     if not unvaried_params:
         return []
@@ -413,14 +420,12 @@ def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
 
     click.secho("0. Go back", fg="red", bold=True)
 
-    for param_col_i, param_col in enumerate(d_config["parameter_columns"]):
+    for param_col_i, param_col in enumerate(PARAM_COLS):
         click.echo(f"{param_col_i + 1}. {param_col}")
 
-    click.secho(
-        f"{len(d_config['parameter_columns']) + 1}. Continue", fg="green", bold=True
-    )
+    click.secho(f"{len(PARAM_COLS) + 1}. Continue", fg="green", bold=True)
 
-    if not DEV_MODE:
+    if not d_config["dev_mode"]:
         user_choice = click.prompt(
             "Which parameter do you want to {}?".format(
                 click.style(
@@ -430,21 +435,21 @@ def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
                     bold=True,
                 )
             ),
-            type=click.IntRange(0, len(d_config["parameter_columns"]) + 1),
-            default=len(d_config["parameter_columns"]) + 1,
+            type=click.IntRange(0, len(PARAM_COLS) + 1),
+            default=len(PARAM_COLS) + 1,
         )
 
     else:
-        user_choice = DEV_CONFIG["filter_option"]
+        user_choice = d_config["dev_config"]["filter_option"]
 
     if user_choice == 0:
         return df
 
-    elif user_choice == len(d_config["parameter_columns"]) + 1:
+    elif user_choice == len(PARAM_COLS) + 1:
         return df
 
     else:
-        df = filter_parameter_value(df, d_config["parameter_columns"][user_choice - 1])
+        df = filter_parameter_value(df, PARAM_COLS[user_choice - 1])
 
     while True:
         # TODO: Uncomment if you ever need to plot the distributions in terminal
@@ -454,7 +459,7 @@ def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
 
         click.secho("0. Go back", fg="red", bold=True)
 
-        for param_col_i, param_col in enumerate(d_config["parameter_columns"]):
+        for param_col_i, param_col in enumerate(PARAM_COLS):
             click.echo(f"{param_col_i + 1}. {param_col}")
 
         click.secho(
@@ -470,20 +475,18 @@ def filter_parameter_values_interactively(df: pd.DataFrame = pd.DataFrame()):
                     bold=True,
                 )
             ),
-            type=click.IntRange(0, len(d_config["parameter_columns"]) + 1),
-            default=len(d_config["parameter_columns"]) + 1,
+            type=click.IntRange(0, len(PARAM_COLS) + 1),
+            default=len(PARAM_COLS) + 1,
         )
 
         if user_choice == 0:
             return df
 
-        elif user_choice == len(d_config["parameter_columns"]) + 1:
+        elif user_choice == len(PARAM_COLS) + 1:
             return df
 
         else:
-            df = filter_parameter_value(
-                df, d_config["parameter_columns"][user_choice - 1]
-            )
+            df = filter_parameter_value(df, PARAM_COLS[user_choice - 1])
 
 
 def get_filter_type(df: pd.DataFrame = pd.DataFrame(), param: str = ""):
@@ -560,7 +563,7 @@ def print_param_values_table(
     if param == "":
         raise ValueError("The parameter is empty.")
 
-    if param not in d_config["parameter_columns"]:
+    if param not in PARAM_COLS:
         raise ValueError("The parameter is not in the dataframe.")
 
     values = sorted(df[param].unique().tolist())
@@ -661,7 +664,7 @@ def get_params_to_vary(df):
     params_to_vary = []
 
     click.secho("0. Exit", fg="red", bold=True)
-    for param_i, param in enumerate(d_config["parameter_columns"]):
+    for param_i, param in enumerate(PARAM_COLS):
         click.echo(f"{param_i + 1}. {param}")
 
     click.secho(
@@ -677,20 +680,20 @@ def get_params_to_vary(df):
                 bold=True,
             )
         ),
-        type=click.IntRange(0, len(d_config["parameter_columns"]) + 1),
-        default=len(d_config["parameter_columns"]) + 1,
+        type=click.IntRange(0, len(PARAM_COLS) + 1),
+        default=len(PARAM_COLS) + 1,
     )
 
-    if user_param_i == 0 or user_param_i == len(d_config["parameter_columns"]) + 1:
+    if user_param_i == 0 or user_param_i == len(PARAM_COLS) + 1:
         return []
 
-    params_to_vary.append(d_config["parameter_columns"][user_param_i - 1])
+    params_to_vary.append(PARAM_COLS[user_param_i - 1])
     variations = get_variations(df, params_to_vary)
     console.print(f"{params_to_vary}: {len(variations)} variations", style="bold green")
 
     while True:
         click.secho("0) Stop", fg="red", bold=True)
-        for param_i, param in enumerate(d_config["parameter_columns"]):
+        for param_i, param in enumerate(PARAM_COLS):
             click.echo(f"{param_i + 1}. {param}")
 
         click.secho(
@@ -711,15 +714,15 @@ def get_params_to_vary(df):
                     bold=True,
                 )
             ),
-            type=click.IntRange(0, len(d_config["parameter_columns"]) + 2),
-            default=len(d_config["parameter_columns"]) + 1,
+            type=click.IntRange(0, len(PARAM_COLS) + 2),
+            default=len(PARAM_COLS) + 1,
         )
 
-        if user_param_i == 0 or user_param_i == len(d_config["parameter_columns"]) + 1:
+        if user_param_i == 0 or user_param_i == len(PARAM_COLS) + 1:
             break
 
-        elif user_param_i > 0 and user_param_i < len(d_config["parameter_columns"]) + 1:
-            params_to_vary.append(d_config["parameter_columns"][user_param_i - 1])
+        elif user_param_i > 0 and user_param_i < len(PARAM_COLS) + 1:
+            params_to_vary.append(PARAM_COLS[user_param_i - 1])
 
         variations = get_variations(df, params_to_vary)
 
@@ -731,7 +734,7 @@ def get_params_to_vary(df):
                 f"{params_to_vary}: {len(variations)} variations", style="bold green"
             )
 
-            if user_param_i == len(d_config["parameter_columns"]) + 2:
+            if user_param_i == len(PARAM_COLS) + 2:
                 pprint(variations)
 
     return params_to_vary
@@ -814,7 +817,7 @@ def filter_parameter_value(df: pd.DataFrame = pd.DataFrame(), param: str = ""):
     if param == "":
         raise ValueError("The parameter is empty.")
 
-    if param not in d_config["parameter_columns"]:
+    if param not in PARAM_COLS:
         raise ValueError("The parameter is not in the dataframe.")
 
     print_param_values_table(df, param)
@@ -1884,6 +1887,7 @@ def process_all_pairings(
 def classify_pairings(
     all_pairings_df: pd.DataFrame = pd.DataFrame(),
     varied_param_list: list = [],
+    d_config: dict = {},
 ):
     if all_pairings_df is None or all_pairings_df.empty:
         raise ValueError("No pairings found.")
@@ -1892,9 +1896,9 @@ def classify_pairings(
 
     assert "metric" in all_pairings_df.columns
     assert all_pairings_df["metric"].nunique() == len(
-        METRIC_COLS
+        d_config["metric_cols"]
     ), "metrics in df: {}\nmetrics in config: {}".format(
-        all_pairings_df["metric"].unique(), METRIC_COLS
+        all_pairings_df["metric"].unique(), d_config["metric_cols"]
     )
 
     most_perf_pairings_df = get_most_perf_pairings(all_pairings_df, varied_param_list)
@@ -2227,7 +2231,7 @@ def plot_param_distribution_per_section(
     output_path = f"{output_dir}/{section_title} histogram.png"
     os.makedirs(output_dir, exist_ok=True)
 
-    exp_param_cols = [col for col in df.columns if col in d_config["parameter_columns"]]
+    exp_param_cols = [col for col in df.columns if col in PARAM_COLS]
 
     fig, axs = plt.subplots(
         nrows=1, ncols=len(exp_param_cols), figsize=(5 * len(exp_param_cols), 5)
@@ -3135,16 +3139,16 @@ def plot_input_distribution(df: pd.DataFrame = pd.DataFrame()):
 
     if df is None or df.empty:
         raise ValueError("No dataframe passed to plot_input_distribution().")
-    if not d_config["parameter_columns"]:
+    if not PARAM_COLS:
         raise ValueError("No parameter columns defined in PARAM_COLS.")
 
-    for col in d_config["parameter_columns"]:
+    for col in PARAM_COLS:
         if col not in df.columns:
             raise ValueError(f"Parameter column {col} not found in dataframe.")
 
     lg.info("Plotting input parameter distribution...")
 
-    df_params = df[d_config["parameter_columns"]].copy()
+    df_params = df[PARAM_COLS].copy()
     df_params = df_params.drop_duplicates().reset_index(drop=True)
     df_params["datalen_bytes"] = df_params["datalen_bytes"].astype(int)
     df_params["pub_count"] = df_params["pub_count"].astype(int)
