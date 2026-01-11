@@ -9,6 +9,11 @@ d_config = {
         "durability",
     ],
     "metric_columns": ["latency_us"],
+    "explore_classifications": {
+        "enabled": True,
+        "metric": "latency_us",
+        "section": {"start": 0, "end": 1},
+    },
     "undesired_datasets": [],
     "sections": [
         {"name": "0_to_5", "start": 0, "end": 0.05},

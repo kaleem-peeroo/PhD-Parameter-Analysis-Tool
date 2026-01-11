@@ -131,13 +131,8 @@ def main(D_CONFIG):
             metric, most_perf_pairings_df, varied_param_list, d_config
         )
 
-    if not d_config["dev_mode"]:
-        if click.confirm("Do you want to explore the classifications?", default=True):
-            explore_classifications(most_perf_pairings_df, varied_param_list, d_config)
-
-    else:
-        if d_config["dev_config"]["explore_classifications"]:
-            explore_classifications(most_perf_pairings_df, varied_param_list, d_config)
+    if d_config["explore_classifications"]["enabled"]:
+        explore_classifications(most_perf_pairings_df, varied_param_list, d_config)
 
 
 def update_experiment_names(df):
@@ -2572,49 +2567,6 @@ def process_most_performant_pairings(
     return most_perf_pairings_df
 
 
-def get_section_from_user(most_perf_pairings_df: pd.DataFrame = pd.DataFrame()):
-    if most_perf_pairings_df is None or most_perf_pairings_df.empty:
-        raise ValueError("No most performant pairings found.")
-
-    sections_df = most_perf_pairings_df.copy()
-    sections_df = (
-        sections_df[["section_start", "section_end"]]
-        .drop_duplicates()
-        .reset_index(drop=True)
-    )
-
-    sections_dict_list = sections_df.to_dict(orient="records")
-
-    for sec_i, section_dict in enumerate(sections_dict_list):
-        click.echo(
-            "{}. {} - {}".format(
-                sec_i + 1, section_dict["section_start"], section_dict["section_end"]
-            )
-        )
-
-    sec_i = click.prompt(
-        "Which section?", type=click.IntRange(1, len(sections_dict_list))
-    )
-
-    section = sections_dict_list[sec_i - 1]
-
-    return section["section_start"], section["section_end"]
-
-
-def get_metric_from_user(most_perf_pairings_df: pd.DataFrame = pd.DataFrame()):
-    if most_perf_pairings_df is None or most_perf_pairings_df.empty:
-        raise ValueError("No most performant pairings found.")
-
-    metrics = most_perf_pairings_df["metric"].unique()
-
-    for metric_i, metric in enumerate(metrics):
-        click.echo(f"{metric_i + 1}. {metric}")
-
-    metric_i = click.prompt("Which metric?", type=click.IntRange(1, len(metrics)))
-
-    return metrics[metric_i - 1]
-
-
 def get_param_dict_from_exp_var(exp_variation_str: str = ""):
     if not exp_variation_str:
         raise ValueError(
@@ -3068,9 +3020,12 @@ def explore_classifications(
     - Plot parameter value distribution per classification
     """
 
-    metric = get_metric_from_user(most_perf_pairings_df)
+    metric = d_config["explore_classifications"]["metric"]
 
-    section_start, section_end = get_section_from_user(most_perf_pairings_df)
+    section_start, section_end = (
+        d_config["explore_classifications"]["section"]["start"],
+        d_config["explore_classifications"]["section"]["end"],
+    )
 
     unique_possible_values = get_unique_possible_values(most_perf_pairings_df)
 

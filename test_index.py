@@ -1,4 +1,5 @@
 import pytest
+import os
 from index import main
 
 
@@ -23,3 +24,5 @@ class TestIndex:
             "./output/input_parameter_distribution_2.png",
         ]
         main(d_config)
+
+        assert all([os.path.exists(path) for path in ls_expected_paths])
